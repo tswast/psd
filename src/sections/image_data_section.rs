@@ -1,4 +1,4 @@
-use crate::psd_channel::PsdChannelCompression;
+use crate::psd_channel::{apply_prediction, zip_decompress, PsdChannelCompression};
 use crate::sections::PsdCursor;
 use crate::PsdDepth;
 use thiserror::Error;
@@ -50,6 +50,7 @@ impl ImageDataSection {
     pub fn from_bytes(
         bytes: &[u8],
         depth: PsdDepth,
+        psd_width: u32,
         psd_height: u32,
         channel_count: u8,
     ) -> Result<ImageDataSection, ImageDataSectionError> {
@@ -199,14 +200,53 @@ impl ImageDataSection {
 
                 (ChannelBytes::RleCompressed(red), green, blue, alpha)
             }
-            PsdChannelCompression::ZipWithoutPrediction => unimplemented!(
-                r#"Zip without prediction compression is currently unsupported.
-                Please open an issue"#
-            ),
-            PsdChannelCompression::ZipWithPrediction => unimplemented!(
-                r#"Zip with prediction compression is currently unsupported.
-                Please open an issue"#
-            ),
+            PsdChannelCompression::ZipWithoutPrediction | PsdChannelCompression::ZipWithPrediction => {
+                let channel_data = &bytes[2..];
+                let mut decompressed = zip_decompress(channel_data);
+
+                if compression == PsdChannelCompression::ZipWithPrediction {
+                    apply_prediction(&mut decompressed, psd_width as usize, psd_height as usize * channel_count, depth);
+                }
+
+                if depth == PsdDepth::Sixteen {
+                    for idx in 0..decompressed.len() / 2 {
+                        let bytes = [decompressed[2 * idx], decompressed[2 * idx + 1]];
+                        let bits16 = u16::from_be_bytes(bytes);
+                        decompressed[idx] = (bits16 / 256) as u8;
+                    }
+                    decompressed.truncate(decompressed.len() / 2);
+                }
+
+                let bytes_per_channel = decompressed.len() / channel_count;
+
+                let red = decompressed[..bytes_per_channel].to_vec();
+
+                let green = if channel_count >= 2 {
+                    Some(ChannelBytes::RawData(
+                        decompressed[bytes_per_channel..2 * bytes_per_channel].to_vec(),
+                    ))
+                } else {
+                    None
+                };
+
+                let blue = if channel_count >= 3 {
+                    Some(ChannelBytes::RawData(
+                        decompressed[2 * bytes_per_channel..3 * bytes_per_channel].to_vec(),
+                    ))
+                } else {
+                    None
+                };
+
+                let alpha = if channel_count == 4 {
+                    Some(ChannelBytes::RawData(
+                        decompressed[3 * bytes_per_channel..4 * bytes_per_channel].to_vec(),
+                    ))
+                } else {
+                    None
+                };
+
+                (ChannelBytes::RawData(red), green, blue, alpha)
+            }
         };
 
         Ok(ImageDataSection {
@@ -223,4 +263,6 @@ impl ImageDataSection {
 pub enum ChannelBytes {
     RawData(Vec<u8>),
     RleCompressed(Vec<u8>),
+    ZipWithoutPrediction(Vec<u8>),
+    ZipWithPrediction(Vec<u8>),
 }
