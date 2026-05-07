@@ -1,5 +1,8 @@
 use crate::sections::image_data_section::ChannelBytes;
 use crate::sections::PsdCursor;
+use crate::PsdDepth;
+use flate2::read::ZlibDecoder;
+use std::io::Read;
 use thiserror::Error;
 
 pub trait IntoRgba {
@@ -32,6 +35,15 @@ pub trait IntoRgba {
 
     /// The height of the PSD
     fn psd_height(&self) -> u32;
+
+    /// The width of the layer or image
+    fn width(&self) -> u32;
+
+    /// The height of the layer or image
+    fn height(&self) -> u32;
+
+    /// The bit depth of the layer or image
+    fn depth(&self) -> PsdDepth;
 
     fn generate_rgba(&self) -> Vec<u8> {
         let rgba_len = (self.psd_width() * self.psd_height() * 4) as usize;
@@ -96,6 +108,7 @@ pub trait IntoRgba {
 
                     sixteen_to_eight_rgba(red, green)
                 }
+                _ => unimplemented!("Zip compression for 16-bit grayscale currently unsupported"),
             },
             ChannelBytes::RleCompressed(red) => {
                 let red = &rle_decompress(red);
@@ -106,8 +119,12 @@ pub trait IntoRgba {
                         let green = &rle_decompress(green);
                         sixteen_to_eight_rgba(red, green)
                     }
+                    _ => {
+                        unimplemented!("Zip compression for 16-bit grayscale currently unsupported")
+                    }
                 }
             }
+            _ => unimplemented!("Zip compression for 16-bit grayscale currently unsupported"),
         }
     }
 
@@ -123,17 +140,43 @@ pub trait IntoRgba {
     ) {
         match channel_bytes {
             ChannelBytes::RawData(channel_bytes) => {
-                let offset = channel_kind.rgba_offset().unwrap();
-
-                for (idx, byte) in channel_bytes.iter().enumerate() {
-                    if let Some(rgba_idx) = self.rgba_idx(idx) {
-                        rgba[rgba_idx * 4 + offset] = *byte;
-                    }
-                }
+                self.insert_raw_channel(rgba, channel_kind, channel_bytes);
             }
             // https://en.wikipedia.org/wiki/PackBits
             ChannelBytes::RleCompressed(channel_bytes) => {
                 self.insert_rle_channel(rgba, channel_kind, &channel_bytes);
+            }
+            ChannelBytes::ZipWithoutPrediction(channel_bytes) => {
+                let decompressed = zip_decompress(channel_bytes);
+                self.insert_raw_channel(rgba, channel_kind, &decompressed);
+            }
+            ChannelBytes::ZipWithPrediction(channel_bytes) => {
+                let mut decompressed = zip_decompress(channel_bytes);
+                apply_prediction(
+                    &mut decompressed,
+                    self.width() as usize,
+                    self.height() as usize,
+                    self.depth(),
+                );
+                self.insert_raw_channel(rgba, channel_kind, &decompressed);
+            }
+        }
+    }
+
+    /// Insert raw bytes into the RGBA vector
+    fn insert_raw_channel(
+        &self,
+        rgba: &mut [u8],
+        channel_kind: PsdChannelKind,
+        channel_bytes: &[u8],
+    ) {
+        let offset = channel_kind.rgba_offset().unwrap();
+
+        for (idx, byte) in channel_bytes.iter().enumerate() {
+            if let Some(rgba_idx) = self.rgba_idx(idx) {
+                if let Some(buffer) = rgba.get_mut(rgba_idx * 4 + offset) {
+                    *buffer = *byte;
+                }
             }
         }
     }
@@ -192,6 +235,31 @@ pub trait IntoRgba {
                     idx += 1;
                 }
             };
+        }
+    }
+}
+
+/// Zip decompress a channel
+pub(crate) fn zip_decompress(bytes: &[u8]) -> Vec<u8> {
+    let mut d = ZlibDecoder::new(bytes);
+    let mut buffer = Vec::new();
+    d.read_to_end(&mut buffer).unwrap();
+    buffer
+}
+
+/// Apply TIFF predictor 2
+pub(crate) fn apply_prediction(data: &mut [u8], width: usize, height: usize, depth: PsdDepth) {
+    let stride = match depth {
+        PsdDepth::Eight => 1,
+        PsdDepth::Sixteen => 2,
+        _ => return,
+    };
+
+    for y in 0..height {
+        let row_start = y * width * stride;
+        for i in stride..width * stride {
+            let idx = row_start + i;
+            data[idx] = data[idx].wrapping_add(data[idx - stride]);
         }
     }
 }
@@ -365,6 +433,7 @@ mod tests {
             clipping_mask: false,
             psd_width: 1,
             psd_height: 1,
+            psd_depth: PsdDepth::Eight,
             blend_mode: BlendMode::Normal,
             group_id: None,
         };

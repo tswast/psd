@@ -8,6 +8,7 @@ use crate::psd_channel::PsdChannelCompression;
 use crate::psd_channel::PsdChannelError;
 use crate::psd_channel::PsdChannelKind;
 use crate::sections::image_data_section::ChannelBytes;
+use crate::PsdDepth;
 
 /// Information about a layer in a PSD file.
 ///
@@ -36,6 +37,8 @@ pub struct LayerProperties {
     pub(crate) psd_width: u32,
     /// The height of the PSD
     pub(crate) psd_height: u32,
+    /// The bit depth of the PSD
+    pub(crate) psd_depth: PsdDepth,
     /// Blending mode of the layer
     pub(crate) blend_mode: BlendMode,
     /// If layer is nested, contains parent group ID, otherwise `None`
@@ -48,6 +51,7 @@ impl LayerProperties {
         layer_record: &LayerRecord,
         psd_width: u32,
         psd_height: u32,
+        psd_depth: PsdDepth,
         group_id: Option<u32>,
     ) -> Self {
         LayerProperties {
@@ -62,6 +66,7 @@ impl LayerProperties {
             blend_mode: layer_record.blend_mode,
             psd_width,
             psd_height,
+            psd_depth,
             group_id,
         }
     }
@@ -72,15 +77,15 @@ impl LayerProperties {
     }
 
     /// The width of the layer
-    pub fn width(&self) -> u16 {
+    pub fn width(&self) -> u32 {
         // If left is at 0 and right is at 4, the width is 5
-        (self.layer_right - self.layer_left) as u16 + 1
+        (self.layer_right - self.layer_left) as u32 + 1
     }
 
     /// The height of the layer
-    pub fn height(&self) -> u16 {
+    pub fn height(&self) -> u32 {
         // If top is at 0 and bottom is at 3, the height is 4
-        (self.layer_bottom - self.layer_top) as u16 + 1
+        (self.layer_bottom - self.layer_top) as u32 + 1
     }
 
     /// If true, the layer is marked as visible
@@ -149,10 +154,17 @@ impl PsdGroup {
         layer_record: &LayerRecord,
         psd_width: u32,
         psd_height: u32,
+        psd_depth: PsdDepth,
         group_id: Option<u32>,
     ) -> Self {
-        let layer_properties =
-            LayerProperties::from_layer_record(name, layer_record, psd_width, psd_height, group_id);
+        let layer_properties = LayerProperties::from_layer_record(
+            name,
+            layer_record,
+            psd_width,
+            psd_height,
+            psd_depth,
+            group_id,
+        );
 
         PsdGroup {
             id,
@@ -215,6 +227,7 @@ impl PsdLayer {
         layer_record: &LayerRecord,
         psd_width: u32,
         psd_height: u32,
+        psd_depth: PsdDepth,
         group_id: Option<u32>,
         channels: LayerChannels,
     ) -> PsdLayer {
@@ -224,6 +237,7 @@ impl PsdLayer {
                 layer_record,
                 psd_width,
                 psd_height,
+                psd_depth,
                 group_id,
             ),
             channels,
@@ -239,6 +253,10 @@ impl PsdLayer {
             Some(channel) => match channel {
                 ChannelBytes::RawData(_) => Ok(PsdChannelCompression::RawData),
                 ChannelBytes::RleCompressed(_) => Ok(PsdChannelCompression::RleCompressed),
+                ChannelBytes::ZipWithoutPrediction(_) => {
+                    Ok(PsdChannelCompression::ZipWithoutPrediction)
+                }
+                ChannelBytes::ZipWithPrediction(_) => Ok(PsdChannelCompression::ZipWithPrediction),
             },
             None => Err(PsdChannelError::ChannelNotFound { channel }),
         }
@@ -470,5 +488,17 @@ impl IntoRgba for PsdLayer {
 
     fn psd_height(&self) -> u32 {
         self.layer_properties.psd_height
+    }
+
+    fn width(&self) -> u32 {
+        self.layer_properties.width()
+    }
+
+    fn height(&self) -> u32 {
+        self.layer_properties.height()
+    }
+
+    fn depth(&self) -> PsdDepth {
+        self.layer_properties.psd_depth
     }
 }
