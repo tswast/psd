@@ -54,9 +54,10 @@ impl ImageDataSection {
         psd_height: u32,
         channel_count: u8,
     ) -> Result<ImageDataSection, ImageDataSectionError> {
-        let mut cursor = PsdCursor::new(bytes);
+        let mut _cursor = PsdCursor::new(bytes);
         let channel_count = channel_count as usize;
 
+        let mut cursor = PsdCursor::new(bytes);
         let compression = cursor.read_u16();
         let compression = PsdChannelCompression::new(compression)
             .ok_or(ImageDataSectionError::InvalidCompression { compression })?;
