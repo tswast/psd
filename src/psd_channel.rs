@@ -30,16 +30,26 @@ pub trait IntoRgba {
     /// The fourth channel
     fn alpha(&self) -> Option<&ChannelBytes>;
 
-    /// The width of the PSD
+    /// The width of the entire PSD.
+    ///
+    /// Even when we are generating RGBA for an individual layer, we still need to know
+    /// the width of the entire PSD so that we can position the layer's pixels correctly
+    /// within the PSD.
     fn psd_width(&self) -> u32;
 
-    /// The height of the PSD
+    /// The height of the entire PSD.
     fn psd_height(&self) -> u32;
 
-    /// The width of the layer or image
+    /// The width of the layer or image that we are currently generating RGBA for.
+    ///
+    /// If we are generating RGBA for the entire PSD, this will be the same as `psd_width`.
+    /// If we are generating RGBA for a layer, this will be the width of that layer.
     fn width(&self) -> u32;
 
-    /// The height of the layer or image
+    /// The height of the layer or image that we are currently generating RGBA for.
+    ///
+    /// If we are generating RGBA for the entire PSD, this will be the same as `psd_height`.
+    /// If we are generating RGBA for a layer, this will be the height of that layer.
     fn height(&self) -> u32;
 
     /// The bit depth of the layer or image
@@ -451,5 +461,40 @@ mod tests {
         layer.insert_channel_bytes(&mut rgba, PsdChannelKind::Red, layer.red());
 
         assert_eq!(rgba, vec![0; 4]);
+    }
+
+    #[test]
+    fn test_zip_decompress() {
+        let data = vec![0xAA, 0xBB, 0xCC, 0xDD];
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        use std::io::Write;
+        encoder.write_all(&data).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let decompressed = zip_decompress(&compressed);
+        assert_eq!(data, decompressed);
+    }
+
+    #[test]
+    fn test_apply_prediction_8bit() {
+        let mut data = vec![100, 10, 20, 30, 100, 5, 10, 15];
+        // Prediction 2: current = current + previous
+        // Row 1: [100, 110, 130, 160]
+        // Row 2: [100, 105, 115, 130]
+        apply_prediction(&mut data, 4, 2, PsdDepth::Eight);
+        assert_eq!(data, vec![100, 110, 130, 160, 100, 105, 115, 130]);
+    }
+
+    #[test]
+    fn test_apply_prediction_16bit() {
+        let mut data = vec![
+            0, 100, 0, 10, // Row 1, Col 1 & 2
+            0, 200, 0, 5, // Row 2, Col 1 & 2
+        ];
+        // 16-bit stride is 2.
+        // Row 1: [0, 100], [0, 10] -> [0, 100], [0, 110]
+        // Row 2: [0, 200], [0, 5] -> [0, 200], [0, 205]
+        apply_prediction(&mut data, 2, 2, PsdDepth::Sixteen);
+        assert_eq!(data, vec![0, 100, 0, 110, 0, 200, 0, 205]);
     }
 }

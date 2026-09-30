@@ -71,7 +71,7 @@ impl ImageDataSection {
                 let bytes_per_channel = channel_byte_count / channel_count;
 
                 // First bytes are red
-                let mut red = channel_bytes[..bytes_per_channel].into();
+                let mut red: Vec<u8> = channel_bytes[..bytes_per_channel].into();
 
                 // Next bytes are green
                 let green = if channel_count >= 2 {
@@ -266,4 +266,97 @@ pub enum ChannelBytes {
     RleCompressed(Vec<u8>),
     ZipWithoutPrediction(Vec<u8>),
     ZipWithPrediction(Vec<u8>),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flate2::Compression;
+    use std::io::Write;
+
+    #[test]
+    fn test_image_data_section_zip_without_prediction() {
+        let width = 2;
+        let height = 2;
+        let channel_count = 3;
+        let data = vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
+
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&data).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let mut bytes = vec![0, 2]; // ZIP without prediction
+        bytes.extend_from_slice(&compressed);
+
+        let section = ImageDataSection::from_bytes(
+            &bytes,
+            PsdDepth::Eight,
+            width,
+            height,
+            channel_count as u8,
+        )
+        .unwrap();
+
+        assert_eq!(
+            section.compression,
+            PsdChannelCompression::ZipWithoutPrediction
+        );
+
+        if let ChannelBytes::RawData(red) = section.red {
+            assert_eq!(red, vec![10, 20, 30, 40]);
+        } else {
+            panic!("Expected RawData for red channel");
+        }
+
+        if let Some(ChannelBytes::RawData(green)) = section.green {
+            assert_eq!(green, vec![50, 60, 70, 80]);
+        } else {
+            panic!("Expected RawData for green channel");
+        }
+
+        if let Some(ChannelBytes::RawData(blue)) = section.blue {
+            assert_eq!(blue, vec![90, 100, 110, 120]);
+        } else {
+            panic!("Expected RawData for blue channel");
+        }
+    }
+
+    #[test]
+    fn test_image_data_section_zip_with_prediction_16bit() {
+        let width = 2;
+        let height = 1;
+        let channel_count = 1;
+
+        // 16-bit data: [1000, 1100]
+        // In Big Endian: [3, 232, 4, 76]
+        // Applying prediction (stride 2):
+        // [3, 232, (4 - 3), (76 - 232)] = [3, 232, 1, 100] (wrapping sub)
+        let mut data = vec![3, 232, 1, 100];
+
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&data).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let mut bytes = vec![0, 3]; // ZIP with prediction
+        bytes.extend_from_slice(&compressed);
+
+        let section = ImageDataSection::from_bytes(
+            &bytes,
+            PsdDepth::Sixteen,
+            width,
+            height,
+            channel_count as u8,
+        )
+        .unwrap();
+
+        assert_eq!(section.compression, PsdChannelCompression::ZipWithPrediction);
+
+        // Decompressed: [3, 232, 4, 76]
+        // Downsampled to 8-bit: [1000 / 256, 1100 / 256] = [3, 4]
+        if let ChannelBytes::RawData(red) = section.red {
+            assert_eq!(red, vec![3, 4]);
+        } else {
+            panic!("Expected RawData for red channel");
+        }
+    }
 }

@@ -502,3 +502,61 @@ impl IntoRgba for PsdLayer {
         self.layer_properties.psd_depth
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sections::layer_and_mask_information_section::layer::LayerChannels;
+    use flate2::Compression;
+    use std::io::Write;
+
+    #[test]
+    fn test_psd_layer_generate_rgba_zip_with_prediction() {
+        let width = 2;
+        let height = 2;
+
+        // Data: [10, 10, 10, 10]
+        // Prediction 2: [10, 0, 10, 0]
+        let data = vec![10, 0, 10, 0];
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&data).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let layer_properties = LayerProperties {
+            name: "test".into(),
+            layer_top: 0,
+            layer_left: 0,
+            layer_bottom: (height - 1) as i32,
+            layer_right: (width - 1) as i32,
+            visible: true,
+            opacity: 255,
+            clipping_mask: false,
+            psd_width: width,
+            psd_height: height,
+            psd_depth: PsdDepth::Eight,
+            blend_mode: BlendMode::Normal,
+            group_id: None,
+        };
+
+        let mut channels = LayerChannels::new();
+        channels.insert(
+            PsdChannelKind::Red,
+            ChannelBytes::ZipWithPrediction(compressed),
+        );
+
+        let layer = PsdLayer {
+            layer_properties,
+            channels,
+        };
+
+        let rgba = layer.generate_rgba();
+
+        // All pixels should be [10, 10, 10, 255]
+        for i in 0..4 {
+            assert_eq!(rgba[i * 4], 10);
+            assert_eq!(rgba[i * 4 + 1], 10);
+            assert_eq!(rgba[i * 4 + 2], 10);
+            assert_eq!(rgba[i * 4 + 3], 255);
+        }
+    }
+}

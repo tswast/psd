@@ -10,7 +10,7 @@ edition = "2018"
 
 [dependencies]
 thiserror = "1"
-flate2 = "1.0"
+flate2 = "1"
 
 [dev-dependencies]
 anyhow = "1"
